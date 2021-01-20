@@ -9,7 +9,12 @@ export function resolveHomeDir(filename) {
     return filename;
 }
 
+const jsGetTickRate = lisp.functionp(lisp.symbols.js_get_tick_rate) ? lisp.js_get_tick_rate : () => { return 0 };
+const jsSetTickRate = lisp.functionp(lisp.symbols.js_set_tick_rate) ? lisp.js_set_tick_rate : () => { };
+
 export function openFileAsync(filename) {
+    const oldTick = jsGetTickRate();
+    jsSetTickRate(0.001);
     filename = resolveHomeDir(filename);
     const base = basename(filename);
     let old_buffer = lisp.get_buffer(base);
@@ -76,6 +81,7 @@ export function openFileAsync(filename) {
 	    });
 	    lisp.pop_to_buffer_same_window(final_buffer);
 	    lisp.kill_buffer(lisp_buffer);
+	    jsGetTickRate(oldTick);
 	    Deno.close(file.rid);
 	} else {
 	    const text = new TextDecoder().decode(buffer);
