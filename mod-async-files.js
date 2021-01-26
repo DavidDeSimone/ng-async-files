@@ -9,12 +9,7 @@ export function resolveHomeDir(filename) {
     return filename;
 }
 
-const jsGetTickRate = lisp.functionp(lisp.symbols.js_get_tick_rate) ? lisp.js_get_tick_rate : () => { return 0 };
-const jsSetTickRate = lisp.functionp(lisp.symbols.js_set_tick_rate) ? lisp.js_set_tick_rate : () => { };
-
-export function openFileAsync(filename) {
-    const oldTick = jsGetTickRate();
-    jsSetTickRate(0.001);
+export function openFileAsyncAndWriteToBuffer(filename) {
     filename = resolveHomeDir(filename);
     const base = basename(filename);
     let old_buffer = lisp.get_buffer(base);
@@ -22,38 +17,38 @@ export function openFileAsync(filename) {
 	lisp.pop_to_buffer_same_window(old_buffer);
 	return;
     }
-
     
     const lisp_buffer = lisp.get_buffer_create("Loading " + base);
     const final_buffer = lisp.get_buffer_create(base);
     lisp.with_current_buffer(lisp_buffer, () => {
 	lisp.erase_buffer();
-	lisp.insert("Loading Progress: [                    ]");
+	lisp.insert(`Loading Progress: [####################] ${filename}`);
 	lisp.pop_to_buffer_same_window(lisp_buffer);	
     });
 
     let totalSize = 1;
     let sizeRead = 0;
-    const timer = setInterval(() => {
+    const updateLoadingBar = () => {
 	const ratio = (sizeRead / totalSize) * 10;
 	let string = "Loading Process: [";
-	for (let i = 0; i < ratio; ++i) {
+	for (let i = 0; i < ratio - 1; ++i) {
 	    string += '--';
 	}
+	string += '>';
 	for (let j = ratio; j < 10; ++j) {
-	    string += '  ';
+	    string += '##';
 	}
 	
-	string += ']';
+	string += `] ${filename}`;
+
 	lisp.with_current_buffer(lisp_buffer, () => {
 	    lisp.erase_buffer();
 	    lisp.insert(string);
 	});
-	
-    }, 1);
+    };
 
     let currSize = 1024 * 32;
-    const MAX_BUFFER = 256 * 1024 * 1024;
+    const MAX_BUFFER = 3 * 1024 * 1024;
     const readNextChunk = (results) => {
 	const { file, size } = results;
 	const buf = new Uint8Array(currSize);
@@ -69,10 +64,9 @@ export function openFileAsync(filename) {
 	const { file, buf, size } = results[1];
 	totalSize = size;
 	sizeRead += bytesRead;
-	console.log(bytesRead);
+	updateLoadingBar();
 	const buffer = buf.subarray(0, bytesRead);
 	if (!bytesRead) {
-	    clearInterval(timer);
 	    lisp.with_current_buffer(final_buffer, () => {
 		lisp.goto_char(lisp.point_min());
 		lisp.set_visited_file_name(filename);
@@ -81,14 +75,12 @@ export function openFileAsync(filename) {
 	    });
 	    lisp.pop_to_buffer_same_window(final_buffer);
 	    lisp.kill_buffer(lisp_buffer);
-	    jsGetTickRate(oldTick);
-	    Deno.close(file.rid);
+	    return Deno.close(file.rid);
 	} else {
 	    const text = new TextDecoder().decode(buffer);
 	    if (!lisp.buffer_live_p(lisp_buffer)
 		|| !lisp.buffer_live_p(final_buffer)) {
-		Deno.close(file.rid);		
-		return;
+		return Deno.close(file.rid);
 	    }
 	    
 	    lisp.with_current_buffer(final_buffer, () => {
@@ -100,18 +92,23 @@ export function openFileAsync(filename) {
 	    
     };
 
-    Deno.open(filename)
+    return Deno.open(filename)
 	.then((file) => {
 	    const size = Deno.seekSync(file.rid, 0, Deno.SeekMode.End);
-	    console.log(size);
 	    Deno.seekSync(file.rid, 0, Deno.SeekMode.Start);
 	    return { file, size };
 	})
 	.then(readNextChunk)
 	.then(processResults)
-	.catch(() => {
-	    // @TODO
-//	    console.log ("File does not exist...");
+	.catch((e) => {
+	    if (!!e &&
+		e instanceof Deno.errors.NotFound) {
+		lisp.kill_buffer(lisp_buffer);
+		lisp.kill_buffer(final_buffer);
+		lisp.find_file(filename);
+	    } else {
+		throw e;
+	    }
 	});
 };
 
@@ -120,5 +117,5 @@ lisp.defun({
     docString: "Loads a local file on disk using async I/O. This will show a loading bar, and switch to the file once load is complete. This function does not currently check to see if the buffer has changed since last opening. Still experiemental",
     interactive: true,
     args: "FFile Name: ",
-    func: filename => openFileAsync(filename)
+    func: filename => openFileAsyncAndWriteToBuffer(filename)
 });
